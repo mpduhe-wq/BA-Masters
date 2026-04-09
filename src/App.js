@@ -1,5 +1,4 @@
-import React from 'react';
-import { useState, useEffect } from "react";
+import React, { useState, useEffect } from "react";
 
 const PLAYERS = [
   { name: "bum4ever", golfers: ["Scheffler", "Hovland"] },
@@ -74,12 +73,14 @@ export default function MastersPool() {
     setError(null);
 
     const ENDPOINTS = [
+      "/api/scores",
       "https://corsproxy.io/?https://site.api.espn.com/apis/site/v2/sports/golf/leaderboard?league=pga",
       "https://api.allorigins.win/raw?url=https://site.api.espn.com/apis/site/v2/sports/golf/leaderboard?league=pga",
     ];
 
     let data = null;
     let lastErr = null;
+    const errors = [];
 
     for (const url of ENDPOINTS) {
       try {
@@ -87,14 +88,16 @@ export default function MastersPool() {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         data = await res.json();
         if (data?.events) break;
+        throw new Error("No events in response");
       } catch (e) {
+        errors.push(`${url.slice(0, 40)}... → ${e.message}`);
         lastErr = e;
         data = null;
       }
     }
 
     if (!data?.events) {
-      setError(`Could not reach any scores source. ${lastErr?.message || ""}`);
+      setError(`All sources failed:\n${errors.join("\n")}`);
       setLoading(false);
       return;
     }
