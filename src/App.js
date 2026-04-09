@@ -14,11 +14,26 @@ const PLAYERS = [
 ];
 
 const GOLFER_FIRST = {
-  Scheffler: "Scottie", Hovland: "Viktor", DeChambeau: "Bryson", Spieth: "Jordan",
-  McIlroy: "Rory", Koepka: "Brooks", Rahm: "Jon", Reed: "Patrick",
-  Aberg: "Ludvig", Bhatia: "Akshay", Schauffele: "Xander", MacIntyre: "Robert",
-  Young: "Cameron", Gotterup: "Chris", Fleetwood: "Tommy", Rose: "Justin",
-  Fitzpatrick: "Matt", Matsuyama: "Hideki", Morikawa: "Collin", Lee: "Min Woo",
+  Scheffler: "Scottie",
+  Hovland: "Viktor",
+  DeChambeau: "Bryson",
+  Spieth: "Jordan",
+  McIlroy: "Rory",
+  Koepka: "Brooks",
+  Rahm: "Jon",
+  Reed: "Patrick",
+  Aberg: "Ludvig",
+  Bhatia: "Akshay",
+  Schauffele: "Xander",
+  MacIntyre: "Robert",
+  Young: "Cameron",
+  Gotterup: "Chris",
+  Fleetwood: "Tommy",
+  Rose: "Justin",
+  Fitzpatrick: "Matt",
+  Matsuyama: "Hideki",
+  Morikawa: "Collin",
+  Lee: "Min Woo",
 };
 
 const GREEN = "#1a4a1f";
@@ -38,7 +53,8 @@ export default function MastersPool() {
   useEffect(() => {
     const link = document.createElement("link");
     link.rel = "stylesheet";
-    link.href = "https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,600;0,700;1,400;1,600&family=EB+Garamond:ital,wght@0,400;0,500;1,400&display=swap";
+    link.href =
+      "https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,600;0,700;1,400;1,600&family=EB+Garamond:ital,wght@0,400;0,500;1,400&display=swap";
     document.head.appendChild(link);
     return () => document.head.removeChild(link);
   }, []);
@@ -72,124 +88,139 @@ export default function MastersPool() {
     setLoading(true);
     setError(null);
 
-    const ENDPOINTS = [
-      "/api/scores",
-      "https://corsproxy.io/?https://site.api.espn.com/apis/site/v2/sports/golf/leaderboard?league=pga",
-      "https://api.allorigins.win/raw?url=https://site.api.espn.com/apis/site/v2/sports/golf/leaderboard?league=pga",
-    ];
-
-    let data = null;
-    let lastErr = null;
-    const errors = [];
-
-    for (const url of ENDPOINTS) {
-      try {
-        const res = await fetch(url);
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        data = await res.json();
-        if (data?.events) break;
-        throw new Error("No events in response");
-      } catch (e) {
-        errors.push(`${url.slice(0, 40)}... → ${e.message}`);
-        lastErr = e;
-        data = null;
-      }
-    }
-
-    if (!data?.events) {
-      setError(`All sources failed:\n${errors.join("\n")}`);
-      setLoading(false);
-      return;
-    }
-
     try {
-      const events = data.events || [];
-      const masters = events.find(e =>
-        e.name?.toLowerCase().includes("masters") ||
-        e.shortName?.toLowerCase().includes("masters")
-      ) || events[0];
+      const res = await fetch("/api/scores", { cache: "no-store" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+      const data = await res.json();
+      const events = data?.events || [];
+
+      const masters =
+        events.find(
+          (e) =>
+            e.name?.toLowerCase().includes("masters") ||
+            e.shortName?.toLowerCase().includes("masters")
+        ) || events[0];
 
       if (!masters) throw new Error("Masters not found in feed");
 
       const competition = masters.competitions?.[0];
-      const statusDesc = competition?.status?.type?.description || "In Progress";
-      const roundNum = competition?.status?.period || 1;
-      const competitors = competition?.competitors || [];
+      if (!competition) throw new Error("Competition data missing");
 
-      const madeCount = competitors.filter(c =>
-        !c.status?.toLowerCase().includes("cut")
-      ).length;
+      const statusDesc =
+        competition.status?.type?.description ||
+        masters.status?.type?.description ||
+        "In Progress";
+
+      const roundNum = competition.status?.period || 1;
+      const competitors = competition.competitors || [];
+
+      const madeCount = competitors.filter((c) => {
+        const display = c.status?.displayValue || "";
+        const detail = c.status?.detail || "";
+        return !/cut/i.test(display) && !/cut/i.test(detail);
+      }).length;
 
       const golfers = {};
-      competitors.forEach(c => {
+
+      competitors.forEach((c) => {
         const fullName = c.athlete?.displayName || "";
         const key = POOL_GOLFERS[fullName];
         if (!key) return;
 
-        const statusStr = typeof c.status === "string"
-  ? c.status
-  : (c.status?.type?.description || c.status?.type?.name || "");
-const madeCut = !statusStr.toLowerCase().includes("cut");
+        const display = c.status?.displayValue || "";
+        const detail = c.status?.detail || "";
+        const madeCut = !/cut/i.test(display) && !/cut/i.test(detail);
 
-        const scoreRaw = c.statistics?.find(s =>
-          s.name === "scoreToPar" || s.abbreviation === "TOT"
-        )?.displayValue ?? c.score ?? "E";
+        const scoreRaw =
+          c.statistics?.find((s) => s.name === "scoreToPar")?.displayValue ??
+          c.linescores?.[0]?.displayValue ??
+          c.score?.displayValue ??
+          "E";
 
-        const thruRaw = c.statistics?.find(s =>
-          s.name === "holesPlayed" || s.abbreviation === "THRU"
-        )?.displayValue ?? 0;
+        const thruRaw =
+          c.status?.thru ??
+          c.status?.displayThru ??
+          0;
+
+        const posRaw =
+          c.status?.position?.displayName ||
+          c.linescores?.[0]?.currentPosition ||
+          null;
+
+        const earningsRaw = c.earnings ?? 0;
 
         const parseScore = (s) => {
-          if (!s || s === "E" || s === "--" || s === "0") return 0;
-          const n = parseInt(s, 10);
-          return isNaN(n) ? 0 : n;
+          if (s === null || s === undefined || s === "" || s === "-" || s === "--")
+            return null;
+          if (s === "E") return 0;
+          const n = parseInt(String(s).replace(/[^\d+-]/g, ""), 10);
+          return Number.isNaN(n) ? null : n;
         };
 
         const parseThru = (s) => {
-          if (!s || s === "F" || s === "F*") return 18;
-          const n = parseInt(s, 10);
-          return isNaN(n) ? 0 : n;
+          if (s === null || s === undefined || s === "" || s === "-") return 0;
+          if (s === "F" || s === "F*" || s === 18) return 18;
+          const n = parseInt(String(s), 10);
+          return Number.isNaN(n) ? 0 : n;
+        };
+
+        const parsePosition = (p) => {
+          if (p === null || p === undefined || p === "-" || p === "") return null;
+          if (typeof p === "number") return p;
+          const cleaned = String(p).replace(/^T/i, "");
+          const n = parseInt(cleaned, 10);
+          return Number.isNaN(n) ? null : n;
         };
 
         golfers[key] = {
-          position: madeCut ? (c.sortOrder || null) : null,
+          position: madeCut ? parsePosition(posRaw) : null,
           score: parseScore(scoreRaw),
           thru: parseThru(thruRaw),
-          earnings: 0,
+          earnings: earningsRaw,
           made_cut: madeCut,
         };
       });
 
       setScores({
-        tournament_status: statusDesc.includes("Final") ? "Complete" : "In Progress",
+        tournament_status: statusDesc.includes("Final") ? "Complete" : statusDesc,
         current_round: roundNum,
         cut_line: madeCount,
         golfers,
       });
+
       setLastUpdated(new Date());
     } catch (err) {
-      setError(`Parsing error: ${err.message}`);
+      setError(err.message || "Failed to fetch scores");
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   };
 
   const getStandings = () => {
     if (!scores?.golfers) return { prize: [], placement: [] };
+
     const cutLine = scores.cut_line || 50;
-    const results = PLAYERS.map(player => {
+
+    const results = PLAYERS.map((player) => {
       const g1 = scores.golfers[player.golfers[0]] || {};
       const g2 = scores.golfers[player.golfers[1]] || {};
       const g1Prize = g1.earnings || 0;
       const g2Prize = g2.earnings || 0;
-      const g1Pos = g1.made_cut === false ? cutLine + 1 : (g1.position || 999);
-      const g2Pos = g2.made_cut === false ? cutLine + 1 : (g2.position || 999);
+      const g1Pos = g1.made_cut === false ? cutLine + 1 : g1.position || 999;
+      const g2Pos = g2.made_cut === false ? cutLine + 1 : g2.position || 999;
+
       return {
         ...player,
-        g1, g2, g1Pos, g2Pos,
+        g1,
+        g2,
+        g1Pos,
+        g2Pos,
         totalPrize: g1Prize + g2Prize,
         totalPlacement: g1Pos + g2Pos,
       };
     });
+
     return {
       prize: [...results].sort((a, b) => b.totalPrize - a.totalPrize),
       placement: [...results].sort((a, b) => a.totalPlacement - b.totalPlacement),
@@ -213,9 +244,9 @@ const madeCut = !statusStr.toLowerCase().includes("cut");
 
   const ordinal = (n) => {
     if (!n || n === 999) return "MC";
-    const s = ["th","st","nd","rd"];
+    const s = ["th", "st", "nd", "rd"];
     const v = n % 100;
-    return n + (s[(v-20)%10] || s[v] || s[0]);
+    return n + (s[(v - 20) % 10] || s[v] || s[0]);
   };
 
   const medalColor = (i) => {
@@ -455,11 +486,6 @@ const madeCut = !statusStr.toLowerCase().includes("cut");
       background: GOLD,
       flexShrink: 0,
     },
-    prizeRow: {
-      display: "flex",
-      alignItems: "center",
-      gap: "8px",
-    },
     infoBox: {
       background: `linear-gradient(135deg, ${GREEN}15, ${GOLD}08)`,
       border: `1px solid ${GOLD}60`,
@@ -474,17 +500,13 @@ const madeCut = !statusStr.toLowerCase().includes("cut");
   };
 
   const renderStandingsTable = (standings, type) => {
-    if (!scores) return (
-      <div style={style.noData}>
-        <p>Click "Fetch Live Scores" to load the Masters leaderboard.</p>
-      </div>
-    );
-    if (scores.tournament_status === "Not Started") return (
-      <div style={style.noData}>
-        <p>⛳ The 2026 Masters has not yet begun.</p>
-        <p style={{ fontSize: "0.85rem", marginTop: "0.5rem" }}>Check back once the tournament is underway.</p>
-      </div>
-    );
+    if (!scores) {
+      return (
+        <div style={style.noData}>
+          <p>Click "Fetch Live Scores" to load the Masters leaderboard.</p>
+        </div>
+      );
+    }
 
     return (
       <div style={{ overflowX: "auto" }}>
@@ -505,6 +527,7 @@ const madeCut = !statusStr.toLowerCase().includes("cut");
               const g1 = p.g1 || {};
               const g2 = p.g2 || {};
               const cutLine = scores.cut_line || 50;
+
               return (
                 <tr key={p.name} style={style.tr(i)}>
                   <td style={style.td}>
@@ -523,9 +546,13 @@ const madeCut = !statusStr.toLowerCase().includes("cut");
                           ? fmt$(g1.earnings)
                           : g1.made_cut === false
                           ? `MC (${cutLine + 1})`
-                          : g1.position ? ordinal(g1.position) : "—"}
+                          : g1.position
+                          ? ordinal(g1.position)
+                          : "—"}
                         {g1.score != null ? ` · ${fmtScore(g1.score)}` : ""}
-                        {g1.thru > 0 && g1.thru < 18 ? ` (thru ${g1.thru})` : g1.thru === 0 ? " · not started" : ""}
+                        {g1.thru > 0 && g1.thru < 18
+                          ? ` (thru ${g1.thru})`
+                          : ""}
                       </span>
                     </div>
                   </td>
@@ -539,21 +566,29 @@ const madeCut = !statusStr.toLowerCase().includes("cut");
                           ? fmt$(g2.earnings)
                           : g2.made_cut === false
                           ? `MC (${cutLine + 1})`
-                          : g2.position ? ordinal(g2.position) : "—"}
+                          : g2.position
+                          ? ordinal(g2.position)
+                          : "—"}
                         {g2.score != null ? ` · ${fmtScore(g2.score)}` : ""}
-                        {g2.thru > 0 && g2.thru < 18 ? ` (thru ${g2.thru})` : g2.thru === 0 ? " · not started" : ""}
+                        {g2.thru > 0 && g2.thru < 18
+                          ? ` (thru ${g2.thru})`
+                          : ""}
                       </span>
                     </div>
                   </td>
                   <td style={{ ...style.td, ...style.tdRight }}>
-                    <strong style={{
-                      fontFamily: "'Playfair Display', Georgia, serif",
-                      fontSize: "1.05rem",
-                      color: i < 2 ? GREEN : DARK_GREEN,
-                    }}>
+                    <strong
+                      style={{
+                        fontFamily: "'Playfair Display', Georgia, serif",
+                        fontSize: "1.05rem",
+                        color: i < 2 ? GREEN : DARK_GREEN,
+                      }}
+                    >
                       {type === "prize"
                         ? fmt$(p.totalPrize)
-                        : p.totalPlacement >= 1998 ? "-" : p.totalPlacement}
+                        : p.totalPlacement >= 1998
+                        ? "-"
+                        : p.totalPlacement}
                     </strong>
                   </td>
                 </tr>
@@ -575,29 +610,36 @@ const madeCut = !statusStr.toLowerCase().includes("cut");
           <div style={style.diamond} />
           <div style={style.flagBar} />
         </div>
+
         <h1 style={style.title}>The Masters</h1>
         <p style={style.subtitle}>Beer Invitational Fantasy — 2026</p>
         <div style={style.goldLine} />
-        <p style={{
-          fontFamily: "'EB Garamond', Georgia, serif",
-          fontSize: "0.85rem",
-          color: LIGHT_GOLD,
-          letterSpacing: "0.15em",
-          textTransform: "uppercase",
-          margin: 0,
-        }}>
+        <p
+          style={{
+            fontFamily: "'EB Garamond', Georgia, serif",
+            fontSize: "0.85rem",
+            color: LIGHT_GOLD,
+            letterSpacing: "0.15em",
+            textTransform: "uppercase",
+            margin: 0,
+          }}
+        >
           Augusta National · April 2026
         </p>
       </div>
 
       <div style={style.nav}>
-        {["standings", "roster", "rules"].map(tab => (
+        {["standings", "roster", "rules"].map((tab) => (
           <button
             key={tab}
             style={style.tab(activeTab === tab)}
             onClick={() => setActiveTab(tab)}
           >
-            {tab === "standings" ? "Standings" : tab === "roster" ? "Roster" : "Rules"}
+            {tab === "standings"
+              ? "Standings"
+              : tab === "roster"
+              ? "Roster"
+              : "Rules"}
           </button>
         ))}
       </div>
@@ -607,16 +649,22 @@ const madeCut = !statusStr.toLowerCase().includes("cut");
           <>
             <div style={style.fetchBar}>
               <div>
-                <h2 style={{
-                  fontFamily: "'Playfair Display', Georgia, serif",
-                  fontSize: "1.1rem",
-                  fontWeight: 400,
-                  fontStyle: "italic",
-                  color: MED_GREEN,
-                  margin: 0,
-                }}>
+                <h2
+                  style={{
+                    fontFamily: "'Playfair Display', Georgia, serif",
+                    fontSize: "1.1rem",
+                    fontWeight: 400,
+                    fontStyle: "italic",
+                    color: MED_GREEN,
+                    margin: 0,
+                  }}
+                >
                   {scores
-                    ? `Tournament: ${scores.tournament_status}${scores.current_round ? ` · Round ${scores.current_round}` : ""}`
+                    ? `Tournament: ${scores.tournament_status}${
+                        scores.current_round
+                          ? ` · Round ${scores.current_round}`
+                          : ""
+                      }`
                     : "Load live scores to view standings"}
                 </h2>
                 {lastUpdated && (
@@ -625,47 +673,83 @@ const madeCut = !statusStr.toLowerCase().includes("cut");
                   </span>
                 )}
               </div>
-              <button style={style.fetchBtn} onClick={fetchScores} disabled={loading}>
+
+              <button
+                style={style.fetchBtn}
+                onClick={fetchScores}
+                disabled={loading}
+              >
                 {loading ? "Fetching…" : "⟳ Fetch Live Scores"}
               </button>
             </div>
 
             {error && (
-              <div style={{ ...style.infoBox, borderLeftColor: "#c0392b", background: "#fdf0ef" }}>
+              <div
+                style={{
+                  ...style.infoBox,
+                  borderLeftColor: "#c0392b",
+                  background: "#fdf0ef",
+                }}
+              >
                 {error}
               </div>
             )}
 
             <div style={style.sectionHead}>
-              <span style={{
-                display: "inline-block",
-                width: "10px",
-                height: "10px",
-                background: GOLD,
-                transform: "rotate(45deg)",
-              }} />
+              <span
+                style={{
+                  display: "inline-block",
+                  width: "10px",
+                  height: "10px",
+                  background: GOLD,
+                  transform: "rotate(45deg)",
+                }}
+              />
               Side A — Combined Prize Money
             </div>
-            <p style={{ fontSize: "0.88rem", color: "#777", fontStyle: "italic", marginTop: "-0.8rem", marginBottom: "1rem" }}>
+
+            <p
+              style={{
+                fontSize: "0.88rem",
+                color: "#777",
+                fontStyle: "italic",
+                marginTop: "-0.8rem",
+                marginBottom: "1rem",
+              }}
+            >
               Highest combined earnings wins · 1st & 2nd place pay out
             </p>
+
             {renderStandingsTable(prizeStandings, "prize")}
 
             <div style={{ height: "2.5rem" }} />
 
             <div style={style.sectionHead}>
-              <span style={{
-                display: "inline-block",
-                width: "10px",
-                height: "10px",
-                background: GOLD,
-                transform: "rotate(45deg)",
-              }} />
+              <span
+                style={{
+                  display: "inline-block",
+                  width: "10px",
+                  height: "10px",
+                  background: GOLD,
+                  transform: "rotate(45deg)",
+                }}
+              />
               Side B — Combined Placement Score
             </div>
-            <p style={{ fontSize: "0.88rem", color: "#777", fontStyle: "italic", marginTop: "-0.8rem", marginBottom: "1rem" }}>
-              Lowest combined finishing position wins · Missed cut = cut line + 1 · 1st & 2nd place pay out
+
+            <p
+              style={{
+                fontSize: "0.88rem",
+                color: "#777",
+                fontStyle: "italic",
+                marginTop: "-0.8rem",
+                marginBottom: "1rem",
+              }}
+            >
+              Lowest combined finishing position wins · Missed cut = cut line + 1
+              · 1st & 2nd place pay out
             </p>
+
             {renderStandingsTable(placementStandings, "placement")}
           </>
         )}
@@ -673,22 +757,27 @@ const madeCut = !statusStr.toLowerCase().includes("cut");
         {activeTab === "roster" && (
           <>
             <div style={style.sectionHead}>
-              <span style={{
-                display: "inline-block",
-                width: "10px",
-                height: "10px",
-                background: GOLD,
-                transform: "rotate(45deg)",
-              }} />
+              <span
+                style={{
+                  display: "inline-block",
+                  width: "10px",
+                  height: "10px",
+                  background: GOLD,
+                  transform: "rotate(45deg)",
+                }}
+              />
               Participant Roster
             </div>
+
             <div style={style.rosterGrid}>
               {PLAYERS.map((p) => {
                 const g1 = scores?.golfers?.[p.golfers[0]] || {};
                 const g2 = scores?.golfers?.[p.golfers[1]] || {};
+
                 return (
                   <div key={p.name} style={style.rosterCard}>
                     <div style={style.rosterName}>{p.name}</div>
+
                     {[
                       [p.golfers[0], g1],
                       [p.golfers[1], g2],
@@ -699,32 +788,47 @@ const madeCut = !statusStr.toLowerCase().includes("cut");
                           {GOLFER_FIRST[last]} <strong>{last}</strong>
                         </span>
                         {scores && (
-                          <span style={{
-                            fontSize: "0.8rem",
-                            color: g.made_cut === false ? "#c0392b" : MED_GREEN,
-                            fontWeight: 500,
-                          }}>
-                            {g.made_cut === false ? "MC" : g.score !== undefined ? fmtScore(g.score) : "—"}
+                          <span
+                            style={{
+                              fontSize: "0.8rem",
+                              color:
+                                g.made_cut === false ? "#c0392b" : MED_GREEN,
+                              fontWeight: 500,
+                            }}
+                          >
+                            {g.made_cut === false
+                              ? "MC"
+                              : g.score !== undefined && g.score !== null
+                              ? fmtScore(g.score)
+                              : "—"}
                           </span>
                         )}
                       </div>
                     ))}
+
                     {scores && (
-                      <div style={{
-                        marginTop: "0.6rem",
-                        paddingTop: "0.6rem",
-                        borderTop: `1px solid ${LIGHT_GOLD}`,
-                        display: "flex",
-                        justifyContent: "space-between",
-                        fontSize: "0.8rem",
-                        color: "#666",
-                      }}>
-                        <span>💰 {fmt$((g1.earnings || 0) + (g2.earnings || 0))}</span>
+                      <div
+                        style={{
+                          marginTop: "0.6rem",
+                          paddingTop: "0.6rem",
+                          borderTop: `1px solid ${LIGHT_GOLD}`,
+                          display: "flex",
+                          justifyContent: "space-between",
+                          fontSize: "0.8rem",
+                          color: "#666",
+                        }}
+                      >
                         <span>
-                          Pos: {(() => {
+                          💰 {fmt$((g1.earnings || 0) + (g2.earnings || 0))}
+                        </span>
+                        <span>
+                          Pos:{" "}
+                          {(() => {
                             const cl = scores.cut_line || 50;
-                            const p1 = g1.made_cut === false ? cl + 1 : g1.position || 999;
-                            const p2 = g2.made_cut === false ? cl + 1 : g2.position || 999;
+                            const p1 =
+                              g1.made_cut === false ? cl + 1 : g1.position || 999;
+                            const p2 =
+                              g2.made_cut === false ? cl + 1 : g2.position || 999;
                             return p1 + p2 >= 1998 ? "—" : p1 + p2;
                           })()}
                         </span>
@@ -740,43 +844,75 @@ const madeCut = !statusStr.toLowerCase().includes("cut");
         {activeTab === "rules" && (
           <>
             <div style={style.sectionHead}>
-              <span style={{
-                display: "inline-block",
-                width: "10px",
-                height: "10px",
-                background: GOLD,
-                transform: "rotate(45deg)",
-              }} />
+              <span
+                style={{
+                  display: "inline-block",
+                  width: "10px",
+                  height: "10px",
+                  background: GOLD,
+                  transform: "rotate(45deg)",
+                }}
+              />
               Pool Rules — BIF 2026
             </div>
+
             <div style={style.infoBox}>
-              <strong style={{ fontFamily: "'Playfair Display', Georgia, serif" }}>Format:</strong> Each of the 10 participants drafted two golfers in a snake-style format. Once selected, a golfer is unavailable to others.
+              <strong style={{ fontFamily: "'Playfair Display', Georgia, serif" }}>
+                Format:
+              </strong>{" "}
+              Each of the 10 participants drafted two golfers in a snake-style
+              format. Once selected, a golfer is unavailable to others.
             </div>
+
             <div style={style.infoBox}>
-              <strong style={{ fontFamily: "'Playfair Display', Georgia, serif" }}>Payouts:</strong> 4 winners total — 1st & 2nd on each side. If you win both sides, you only receive the better prize. Winners receive 3 bottle picks; runner-ups receive 2 bottle picks. 10 participants total.
+              <strong style={{ fontFamily: "'Playfair Display', Georgia, serif" }}>
+                Payouts:
+              </strong>{" "}
+              4 winners total — 1st & 2nd on each side. If you win both sides,
+              you only receive the better prize. Winners receive 3 bottle picks;
+              runner-ups receive 2 bottle picks. 10 participants total.
             </div>
+
             <div style={style.infoBox}>
-              <strong style={{ fontFamily: "'Playfair Display', Georgia, serif" }}>Side A — Prize Money:</strong> The total official prize money earned by your two golfers combined. Higher total wins.
+              <strong style={{ fontFamily: "'Playfair Display', Georgia, serif" }}>
+                Side A — Prize Money:
+              </strong>{" "}
+              The total official prize money earned by your two golfers combined.
+              Higher total wins.
             </div>
+
             <div style={style.infoBox}>
-              <strong style={{ fontFamily: "'Playfair Display', Georgia, serif" }}>Side B — Placement Score:</strong> The combined finishing positions of your two golfers. <em>Lowest score wins.</em> If a golfer misses the cut, their score is: (number of players who made the cut) + 1.
+              <strong style={{ fontFamily: "'Playfair Display', Georgia, serif" }}>
+                Side B — Placement Score:
+              </strong>{" "}
+              The combined finishing positions of your two golfers. <em>Lowest
+              score wins.</em> If a golfer misses the cut, their score is:
+              (number of players who made the cut) + 1.
             </div>
+
             <div style={style.infoBox}>
-              <strong style={{ fontFamily: "'Playfair Display', Georgia, serif" }}>Bottle Draft:</strong> Winners may draft their own bottle if available when their turn comes in the bottle draft. All bottles are shipped unless the winner elects to draft locally.
+              <strong style={{ fontFamily: "'Playfair Display', Georgia, serif" }}>
+                Bottle Draft:
+              </strong>{" "}
+              Winners may draft their own bottle if available when their turn
+              comes in the bottle draft. All bottles are shipped unless the
+              winner elects to draft locally.
             </div>
           </>
         )}
 
-        <div style={{
-          textAlign: "center",
-          marginTop: "3rem",
-          paddingTop: "1.5rem",
-          borderTop: `1px solid ${LIGHT_GOLD}`,
-          fontSize: "0.78rem",
-          color: "#aaa",
-          fontStyle: "italic",
-          letterSpacing: "0.05em",
-        }}>
+        <div
+          style={{
+            textAlign: "center",
+            marginTop: "3rem",
+            paddingTop: "1.5rem",
+            borderTop: `1px solid ${LIGHT_GOLD}`,
+            fontSize: "0.78rem",
+            color: "#aaa",
+            fontStyle: "italic",
+            letterSpacing: "0.05em",
+          }}
+        >
           A tradition unlike any other · BIF Masters Pool 2026
         </div>
       </div>
