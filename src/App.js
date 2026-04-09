@@ -126,7 +126,10 @@ export default function MastersPool() {
         const key = POOL_GOLFERS[fullName];
         if (!key) return;
 
-        const madeCut = !c.status?.toLowerCase().includes("cut");
+        const statusStr = typeof c.status === "string"
+  ? c.status
+  : (c.status?.type?.description || c.status?.type?.name || "");
+const madeCut = !statusStr.toLowerCase().includes("cut");
 
         const scoreRaw = c.statistics?.find(s =>
           s.name === "scoreToPar" || s.abbreviation === "TOT"
