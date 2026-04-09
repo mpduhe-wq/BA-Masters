@@ -43,6 +43,285 @@ const DARK_GREEN = "#0f2d12";
 const LIGHT_GOLD = "#f0e4c0";
 const MED_GREEN = "#2e6b35";
 
+/*
+  2026 projection inputs requested by user:
+  - Total purse: $25,000,000
+  - 1st: $5,000,000
+  - 2nd: $3,000,000
+  - 3rd: $2,000,000
+  - Minimum for pros missing the cut: $20,000
+
+  For places 4+, this app builds a projected payout curve by scaling
+  the 2025 Masters shape for positions 4-53, then fitting it to the
+  remaining purse after accounting for:
+  - fixed 1st/2nd/3rd
+  - actual number of pros missing the cut at $20k each
+
+  Tie handling:
+  - ties split the average of the occupied payout slots
+  - amateurs receive $0 and are skipped for payout slot purposes
+*/
+
+// Baseline payout shape only, used as weights for projected 2026 slots 4+.
+const BASELINE_2025_PAYOUTS = {
+  1: 4200000,
+  2: 2268000,
+  3: 1428000,
+  4: 1008000,
+  5: 840000,
+  6: 756000,
+  7: 703500,
+  8: 651000,
+  9: 609000,
+  10: 567000,
+  11: 525000,
+  12: 483000,
+  13: 441000,
+  14: 399000,
+  15: 378000,
+  16: 357000,
+  17: 336000,
+  18: 315000,
+  19: 294000,
+  20: 273000,
+  21: 252000,
+  22: 235200,
+  23: 218400,
+  24: 201600,
+  25: 184800,
+  26: 168000,
+  27: 161700,
+  28: 155400,
+  29: 149100,
+  30: 142800,
+  31: 136500,
+  32: 130200,
+  33: 123900,
+  34: 118650,
+  35: 113400,
+  36: 108150,
+  37: 102900,
+  38: 98700,
+  39: 94500,
+  40: 90300,
+  41: 86100,
+  42: 81900,
+  43: 77700,
+  44: 73500,
+  45: 69300,
+  46: 65100,
+  47: 60900,
+  48: 57540,
+  49: 54600,
+  50: 52920,
+  51: 51660,
+  52: 50400,
+  53: 49140,
+};
+
+const PROJECTED_2026_TOTAL_PURSE = 25000000;
+const FIXED_PAYOUTS_2026 = {
+  1: 5000000,
+  2: 3000000,
+  3: 2000000,
+};
+const MISSED_CUT_PRO_MONEY_2026 = 20000;
+
+function parsePositionNumber(posText) {
+  if (posText === null || posText === undefined) return null;
+  const cleaned = String(posText).replace(/^T/i, "").trim();
+  const n = parseInt(cleaned, 10);
+  return Number.isNaN(n) ? null : n;
+}
+
+function parseScoreValue(scoreText) {
+  if (
+    scoreText === null ||
+    scoreText === undefined ||
+    scoreText === "" ||
+    scoreText === "-" ||
+    scoreText === "--"
+  ) {
+    return null;
+  }
+  if (scoreText === "E") return 0;
+  const n = parseInt(String(scoreText).replace(/[^\d+-]/g, ""), 10);
+  return Number.isNaN(n) ? null : n;
+}
+
+function parseThruValue(thruText) {
+  if (
+    thruText === null ||
+    thruText === undefined ||
+    thruText === "" ||
+    thruText === "-"
+  ) {
+    return 0;
+  }
+  if (thruText === "F" || thruText === "F*" || thruText === 18) return 18;
+  const n = parseInt(String(thruText), 10);
+  return Number.isNaN(n) ? 0 : n;
+}
+
+function isAmateurCompetitor(c) {
+  return c?.athlete?.amateur === true;
+}
+
+function madeCutCompetitor(c) {
+  const display = c?.status?.displayValue || "";
+  const detail = c?.status?.detail || "";
+  return !/cut/i.test(display) && !/cut/i.test(detail);
+}
+
+function getDisplayPositionText(c) {
+  return (
+    c?.status?.position?.displayName ||
+    c?.status?.position?.displayValue ||
+    c?.linescores?.[0]?.currentPosition ||
+    null
+  );
+}
+
+function getOverallPositionNumber(c) {
+  return parsePositionNumber(getDisplayPositionText(c));
+}
+
+function buildProjectedPayoutTable(prosWhoMadeCutCount, prosMissedCutCount) {
+  const payouts = {
+    1: FIXED_PAYOUTS_2026[1],
+    2: FIXED_PAYOUTS_2026[2],
+    3: FIXED_PAYOUTS_2026[3],
+  };
+
+  const remainingPurse =
+    PROJECTED_2026_TOTAL_PURSE -
+    FIXED_PAYOUTS_2026[1] -
+    FIXED_PAYOUTS_2026[2] -
+    FIXED_PAYOUTS_2026[3] -
+    prosMissedCutCount * MISSED_CUT_PRO_MONEY_2026;
+
+  const projectedPaidPlaces = Math.max(0, prosWhoMadeCutCount - 3);
+
+  if (projectedPaidPlaces <= 0 || remainingPurse <= 0) {
+    return payouts;
+  }
+
+  let weightSum = 0;
+  for (let pos = 4; pos <= prosWhoMadeCutCount; pos += 1) {
+    const weight = BASELINE_2025_PAYOUTS[pos] || BASELINE_2025_PAYOUTS[53];
+    weightSum += weight;
+  }
+
+  if (weightSum <= 0) {
+    return payouts;
+  }
+
+  for (let pos = 4; pos <= prosWhoMadeCutCount; pos += 1) {
+    const weight = BASELINE_2025_PAYOUTS[pos] || BASELINE_2025_PAYOUTS[53];
+    payouts[pos] = (remainingPurse * weight) / weightSum;
+  }
+
+  return payouts;
+}
+
+function averagePayoutSlots(payoutTable, startSlot, slotCount) {
+  let total = 0;
+  let count = 0;
+
+  for (let slot = startSlot; slot < startSlot + slotCount; slot += 1) {
+    if (payoutTable[slot] !== undefined) {
+      total += payoutTable[slot];
+      count += 1;
+    }
+  }
+
+  return count ? total / count : 0;
+}
+
+function buildProLeaderboardGroups(competitors) {
+  const proMadeCut = competitors
+    .filter((c) => !isAmateurCompetitor(c))
+    .filter((c) => madeCutCompetitor(c))
+    .map((c) => ({
+      competitor: c,
+      overallPos: getOverallPositionNumber(c),
+      posText: getDisplayPositionText(c),
+      scoreToPar:
+        parseScoreValue(
+          c?.statistics?.find((s) => s.name === "scoreToPar")?.displayValue ??
+            c?.score?.displayValue ??
+            c?.score ??
+            null
+        ) ?? 999,
+      rawName: c?.athlete?.displayName || "",
+    }))
+    .filter((x) => x.overallPos !== null)
+    .sort((a, b) => {
+      if (a.overallPos !== b.overallPos) return a.overallPos - b.overallPos;
+      if (a.scoreToPar !== b.scoreToPar) return a.scoreToPar - b.scoreToPar;
+      return a.rawName.localeCompare(b.rawName);
+    });
+
+  const groups = [];
+  for (const item of proMadeCut) {
+    const last = groups[groups.length - 1];
+    if (!last || last.overallPos !== item.overallPos) {
+      groups.push({
+        overallPos: item.overallPos,
+        competitors: [item.competitor],
+      });
+    } else {
+      last.competitors.push(item.competitor);
+    }
+  }
+
+  return groups;
+}
+
+function buildProjectedEarningsMap(competitors) {
+  const prosMissedCut = competitors
+    .filter((c) => !isAmateurCompetitor(c))
+    .filter((c) => !madeCutCompetitor(c));
+
+  const proGroups = buildProLeaderboardGroups(competitors);
+  const prosWhoMadeCutCount = proGroups.reduce(
+    (sum, g) => sum + g.competitors.length,
+    0
+  );
+
+  const payoutTable = buildProjectedPayoutTable(
+    prosWhoMadeCutCount,
+    prosMissedCut.length
+  );
+
+  const projected = new Map();
+
+  let nextPaidSlot = 1;
+  for (const group of proGroups) {
+    const tieCount = group.competitors.length;
+    const avg = averagePayoutSlots(payoutTable, nextPaidSlot, tieCount);
+
+    for (const c of group.competitors) {
+      const key = c?.athlete?.displayName || "";
+      projected.set(key, avg);
+    }
+
+    nextPaidSlot += tieCount;
+  }
+
+  for (const c of prosMissedCut) {
+    const key = c?.athlete?.displayName || "";
+    projected.set(key, MISSED_CUT_PRO_MONEY_2026);
+  }
+
+  for (const c of competitors.filter((x) => isAmateurCompetitor(x))) {
+    const key = c?.athlete?.displayName || "";
+    projected.set(key, 0);
+  }
+
+  return projected;
+}
+
 export default function MastersPool() {
   const [scores, setScores] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -98,87 +377,55 @@ export default function MastersPool() {
       const masters =
         events.find(
           (e) =>
-            e.name?.toLowerCase().includes("masters") ||
-            e.shortName?.toLowerCase().includes("masters")
+            e?.name?.toLowerCase().includes("masters") ||
+            e?.shortName?.toLowerCase().includes("masters")
         ) || events[0];
 
       if (!masters) throw new Error("Masters not found in feed");
 
-      const competition = masters.competitions?.[0];
+      const competition = masters?.competitions?.[0];
       if (!competition) throw new Error("Competition data missing");
 
       const statusDesc =
-        competition.status?.type?.description ||
-        masters.status?.type?.description ||
+        competition?.status?.type?.description ||
+        masters?.status?.type?.description ||
         "In Progress";
 
-      const roundNum = competition.status?.period || 1;
-      const competitors = competition.competitors || [];
+      const roundNum = competition?.status?.period || 1;
+      const competitors = competition?.competitors || [];
 
-      const madeCount = competitors.filter((c) => {
-        const display = c.status?.displayValue || "";
-        const detail = c.status?.detail || "";
-        return !/cut/i.test(display) && !/cut/i.test(detail);
-      }).length;
+      const projectedMap = buildProjectedEarningsMap(competitors);
+
+      const madeCount = competitors.filter((c) => madeCutCompetitor(c)).length;
 
       const golfers = {};
 
       competitors.forEach((c) => {
-        const fullName = c.athlete?.displayName || "";
+        const fullName = c?.athlete?.displayName || "";
         const key = POOL_GOLFERS[fullName];
         if (!key) return;
 
-        const display = c.status?.displayValue || "";
-        const detail = c.status?.detail || "";
-        const madeCut = !/cut/i.test(display) && !/cut/i.test(detail);
+        const madeCut = madeCutCompetitor(c);
 
         const scoreRaw =
-          c.statistics?.find((s) => s.name === "scoreToPar")?.displayValue ??
-          c.linescores?.[0]?.displayValue ??
-          c.score?.displayValue ??
+          c?.statistics?.find((s) => s.name === "scoreToPar")?.displayValue ??
+          c?.score?.displayValue ??
+          c?.score ??
           "E";
 
-        const thruRaw =
-          c.status?.thru ??
-          c.status?.displayThru ??
-          0;
-
-        const posRaw =
-          c.status?.position?.displayName ||
-          c.linescores?.[0]?.currentPosition ||
-          null;
-
-        const earningsRaw = c.earnings ?? 0;
-
-        const parseScore = (s) => {
-          if (s === null || s === undefined || s === "" || s === "-" || s === "--")
-            return null;
-          if (s === "E") return 0;
-          const n = parseInt(String(s).replace(/[^\d+-]/g, ""), 10);
-          return Number.isNaN(n) ? null : n;
-        };
-
-        const parseThru = (s) => {
-          if (s === null || s === undefined || s === "" || s === "-") return 0;
-          if (s === "F" || s === "F*" || s === 18) return 18;
-          const n = parseInt(String(s), 10);
-          return Number.isNaN(n) ? 0 : n;
-        };
-
-        const parsePosition = (p) => {
-          if (p === null || p === undefined || p === "-" || p === "") return null;
-          if (typeof p === "number") return p;
-          const cleaned = String(p).replace(/^T/i, "");
-          const n = parseInt(cleaned, 10);
-          return Number.isNaN(n) ? null : n;
-        };
+        const thruRaw = c?.status?.thru ?? c?.status?.displayThru ?? 0;
+        const posText = getDisplayPositionText(c);
+        const position = madeCut ? parsePositionNumber(posText) : null;
 
         golfers[key] = {
-          position: madeCut ? parsePosition(posRaw) : null,
-          score: parseScore(scoreRaw),
-          thru: parseThru(thruRaw),
-          earnings: earningsRaw,
+          position,
+          position_text: posText,
+          score: parseScoreValue(scoreRaw),
+          thru: parseThruValue(thruRaw),
+          earnings: c?.earnings ?? 0,
+          projected_earnings: projectedMap.get(fullName) ?? 0,
           made_cut: madeCut,
+          is_amateur: isAmateurCompetitor(c),
         };
       });
 
@@ -191,7 +438,7 @@ export default function MastersPool() {
 
       setLastUpdated(new Date());
     } catch (err) {
-      setError(err.message || "Failed to fetch scores");
+      setError(err?.message || "Failed to fetch scores");
     } finally {
       setLoading(false);
     }
@@ -205,8 +452,17 @@ export default function MastersPool() {
     const results = PLAYERS.map((player) => {
       const g1 = scores.golfers[player.golfers[0]] || {};
       const g2 = scores.golfers[player.golfers[1]] || {};
-      const g1Prize = g1.earnings || 0;
-      const g2Prize = g2.earnings || 0;
+
+      const g1Prize =
+        scores.tournament_status === "Complete"
+          ? (g1.earnings || 0)
+          : (g1.projected_earnings || 0);
+
+      const g2Prize =
+        scores.tournament_status === "Complete"
+          ? (g2.earnings || 0)
+          : (g2.projected_earnings || 0);
+
       const g1Pos = g1.made_cut === false ? cutLine + 1 : g1.position || 999;
       const g2Pos = g2.made_cut === false ? cutLine + 1 : g2.position || 999;
 
@@ -233,7 +489,7 @@ export default function MastersPool() {
     if (!n) return "$0";
     if (n >= 1000000) return `$${(n / 1000000).toFixed(2)}M`;
     if (n >= 1000) return `$${Math.round(n / 1000)}K`;
-    return `$${n}`;
+    return `$${Math.round(n).toLocaleString()}`;
   };
 
   const fmtScore = (s) => {
@@ -518,7 +774,7 @@ export default function MastersPool() {
               <th style={style.th}>Golfer 1</th>
               <th style={style.th}>Golfer 2</th>
               <th style={{ ...style.th, ...style.thRight }}>
-                {type === "prize" ? "Total Prize $" : "Combined Pos."}
+                {type === "prize" ? "Projected Prize $" : "Combined Pos."}
               </th>
             </tr>
           </thead>
@@ -543,16 +799,16 @@ export default function MastersPool() {
                       </span>
                       <span style={{ fontSize: "0.78rem", color: "#888" }}>
                         {type === "prize"
-                          ? fmt$(g1.earnings)
+                          ? fmt$(
+                              scores.tournament_status === "Complete"
+                                ? (g1.earnings || 0)
+                                : (g1.projected_earnings || 0)
+                            )
                           : g1.made_cut === false
                           ? `MC (${cutLine + 1})`
-                          : g1.position
-                          ? ordinal(g1.position)
-                          : "—"}
+                          : g1.position_text || "—"}
                         {g1.score != null ? ` · ${fmtScore(g1.score)}` : ""}
-                        {g1.thru > 0 && g1.thru < 18
-                          ? ` (thru ${g1.thru})`
-                          : ""}
+                        {g1.thru > 0 && g1.thru < 18 ? ` (thru ${g1.thru})` : ""}
                       </span>
                     </div>
                   </td>
@@ -563,16 +819,16 @@ export default function MastersPool() {
                       </span>
                       <span style={{ fontSize: "0.78rem", color: "#888" }}>
                         {type === "prize"
-                          ? fmt$(g2.earnings)
+                          ? fmt$(
+                              scores.tournament_status === "Complete"
+                                ? (g2.earnings || 0)
+                                : (g2.projected_earnings || 0)
+                            )
                           : g2.made_cut === false
                           ? `MC (${cutLine + 1})`
-                          : g2.position
-                          ? ordinal(g2.position)
-                          : "—"}
+                          : g2.position_text || "—"}
                         {g2.score != null ? ` · ${fmtScore(g2.score)}` : ""}
-                        {g2.thru > 0 && g2.thru < 18
-                          ? ` (thru ${g2.thru})`
-                          : ""}
+                        {g2.thru > 0 && g2.thru < 18 ? ` (thru ${g2.thru})` : ""}
                       </span>
                     </div>
                   </td>
@@ -661,9 +917,7 @@ export default function MastersPool() {
                 >
                   {scores
                     ? `Tournament: ${scores.tournament_status}${
-                        scores.current_round
-                          ? ` · Round ${scores.current_round}`
-                          : ""
+                        scores.current_round ? ` · Round ${scores.current_round}` : ""
                       }`
                     : "Load live scores to view standings"}
                 </h2>
@@ -689,6 +943,7 @@ export default function MastersPool() {
                   ...style.infoBox,
                   borderLeftColor: "#c0392b",
                   background: "#fdf0ef",
+                  whiteSpace: "pre-wrap",
                 }}
               >
                 {error}
@@ -717,7 +972,9 @@ export default function MastersPool() {
                 marginBottom: "1rem",
               }}
             >
-              Highest combined earnings wins · 1st & 2nd place pay out
+              {scores?.tournament_status === "Complete"
+                ? "Highest combined official earnings wins · 1st & 2nd place pay out"
+                : "Highest combined projected 2026 earnings wins · ties split payout slots correctly · pros missing cut projected at $20K"}
             </p>
 
             {renderStandingsTable(prizeStandings, "prize")}
@@ -791,8 +1048,7 @@ export default function MastersPool() {
                           <span
                             style={{
                               fontSize: "0.8rem",
-                              color:
-                                g.made_cut === false ? "#c0392b" : MED_GREEN,
+                              color: g.made_cut === false ? "#c0392b" : MED_GREEN,
                               fontWeight: 500,
                             }}
                           >
@@ -819,7 +1075,13 @@ export default function MastersPool() {
                         }}
                       >
                         <span>
-                          💰 {fmt$((g1.earnings || 0) + (g2.earnings || 0))}
+                          💰{" "}
+                          {fmt$(
+                            (scores.tournament_status === "Complete"
+                              ? (g1.earnings || 0) + (g2.earnings || 0)
+                              : (g1.projected_earnings || 0) +
+                                (g2.projected_earnings || 0))
+                          )}
                         </span>
                         <span>
                           Pos:{" "}
@@ -877,8 +1139,8 @@ export default function MastersPool() {
               <strong style={{ fontFamily: "'Playfair Display', Georgia, serif" }}>
                 Side A — Prize Money:
               </strong>{" "}
-              The total official prize money earned by your two golfers combined.
-              Higher total wins.
+              During the tournament, projected 2026 prize money is used. Once the
+              tournament is complete, official earnings are used.
             </div>
 
             <div style={style.infoBox}>
@@ -892,11 +1154,11 @@ export default function MastersPool() {
 
             <div style={style.infoBox}>
               <strong style={{ fontFamily: "'Playfair Display', Georgia, serif" }}>
-                Bottle Draft:
+                Projection Method:
               </strong>{" "}
-              Winners may draft their own bottle if available when their turn
-              comes in the bottle draft. All bottles are shipped unless the
-              winner elects to draft locally.
+              Uses a $25M projected 2026 purse with fixed 1st/2nd/3rd prizes of
+              $5M/$3M/$2M, $20K minimum for pros missing the cut, and proper tie
+              averaging across payout slots.
             </div>
           </>
         )}
